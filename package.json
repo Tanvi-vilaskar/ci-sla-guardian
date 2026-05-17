@@ -1,0 +1,90 @@
+{
+  "name": "cobol-sla-guardian-doneai",
+  "displayName": "COBOL SLA Guardian new update doneai",
+  "description": "Static COBOL analyzer: syntax check, dead code detection, feature extraction, and SLA performance prediction.",
+  "version": "9.0.0",
+  "publisher": "bmcviitians",
+  "icon": "icons.png",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Linters",
+    "Other"
+  ],
+  "activationEvents": [
+    "*"
+  ],
+  "main": "./src/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "cobol",
+        "aliases": [
+          "COBOL",
+          "cobol"
+        ],
+        "extensions": [
+          ".cbl",
+          ".cob",
+          ".CBL",
+          ".COB",
+          ".cobol",
+          ".COBOL"
+        ]
+      }
+    ],
+    "commands": [
+      {
+        "command": "slaGuardian.showDashboard",
+        "title": "SLA Guardian: Show Dashboard"
+      },
+      {
+        "command": "slaGuardian.extractFeatures",
+        "title": "SLA Guardian: Extract Features"
+      },
+      {
+        "command": "slaGuardian.passFeaturesToModelTraining",
+        "title": "SLA Guardian: Pass Features to Model Training"
+      },
+      {
+        "command": "slaGuardian.clearDiagnostics",
+        "title": "SLA Guardian: Clear Diagnostics"
+      }
+    ],
+    "configuration": {
+      "title": "COBOL SLA Guardian",
+      "properties": {
+        "slaGuardian.enableOnSave": {
+          "type": "boolean",
+          "default": true,
+          "description": "Run analysis automatically on file save."
+        },
+        "slaGuardian.featureOutputPath": {
+          "type": "string",
+          "default": "./sla_features",
+          "description": "Output path for extracted feature files."
+        },
+        "slaGuardian.autoExtractFeatures": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically extract features after analysis."
+        },
+        "slaGuardian.entryPointParagraph": {
+          "type": "string",
+          "default": "MAIN-PARA",
+          "description": "Entry point paragraph name."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "package": "vsce package"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "dotenv": "^17.4.2",
+    "install": "^0.13.0",
+    "node-fetch": "^2.7.0"
+  }
+}
