@@ -2,10 +2,10 @@ pipeline {
     agent any
 
     environment {
-        SLA_THRESHOLD       = "5.0"
-        SESSION_THRESHOLD   = "20.0"
-        LINE_CPU_THRESHOLD  = "15"
-        SLA_AI_ENABLED      = "false"
+        SLA_THRESHOLD      = "5.0"
+        SESSION_THRESHOLD  = "20.0"
+        LINE_CPU_THRESHOLD = "15"
+        SLA_AI_ENABLED     = "false"
     }
 
     stages {
@@ -31,9 +31,11 @@ pipeline {
         stage('Detect changed COBOL files') {
             steps {
                 script {
-                    // Try diff vs origin/main; fall back to previous commit
+
                     def diffRaw = bat(
-                        script: 'git diff --name-only origin/main...HEAD || git diff --name-only HEAD~1',
+                        script: '''
+git diff --name-only origin/main...HEAD
+''',
                         returnStdout: true
                     ).trim()
 
@@ -41,9 +43,9 @@ pipeline {
 
                     def diff = diffRaw ? diffRaw.split('\n') : []
 
-                    // Pick only COBOL files (case-insensitive)
                     def cobol = diff.findAll { f ->
-                        f.toLowerCase().endsWith('.cbl') || f.toLowerCase().endsWith('.cob')
+                        f.toLowerCase().endsWith('.cbl') ||
+                        f.toLowerCase().endsWith('.cob')
                     }
 
                     env.COBOL_FILES = cobol.join(' ')
@@ -61,13 +63,16 @@ pipeline {
             when {
                 expression { env.COBOL_FILES?.trim() }
             }
+
             steps {
-                // Run analysis, but do not stop the pipeline on non-zero exit code from Node
+
                 bat """
-                node ci/runAnalysis.js ${env.COBOL_FILES} > ci-result.json
-                echo NODE_EXIT=%ERRORLEVEL%
-                exit /b 0
-                """
+node ci/runAnalysis.js ${env.COBOL_FILES} > ci-result.json
+
+echo NODE_EXIT=%ERRORLEVEL%
+
+exit /b 0
+"""
             }
         }
 
@@ -75,55 +80,94 @@ pipeline {
             when {
                 expression { env.COBOL_FILES?.trim() }
             }
+
             steps {
                 script {
-                    // 1) Read raw contents (may include banners)
-                    def raw = readFile 'ci-result.json'
+
+                    def raw = readFile('ci-result.json')
+
                     echo "Raw ci-result.json:\n${raw}"
 
-                    // 2) Find first '{' and keep from there onwards
                     def braceIndex = raw.indexOf('{')
+
                     if (braceIndex < 0) {
-                        echo "ci-result.json does not contain a JSON object start: ${raw}"
-                        error("SLA summary failed: no JSON object found in ci-result.json")
+                        error("ci-result.json does not contain valid JSON")
                     }
+
                     def jsonText = raw.substring(braceIndex).trim()
 
-                    // 3) Overwrite file with clean JSON
-                    writeFile file: 'ci-result.json', text: jsonText
+                    writeFile(
+                        file: 'ci-result.json',
+                        text: jsonText
+                    )
 
-                    // 4) Parse JSON
                     def json = readJSON file: 'ci-result.json'
+
                     def breached = json.results.any { it.breached }
 
-                    // 5) Build human-readable summary
                     def lines = []
+
                     lines << "SLA analysis for PR:"
                     lines << ""
+
                     json.results.each { r ->
+
                         def cpu = r.mlResult?.cpu_time ?: 0
                         def session = r.mlResult?.session_time ?: 0
                         def status = r.breached ? "BREACHED" : "OK"
-                        lines << "- `${r.file}` → CPU=${cpu}s, Session=${session}s, Status=${status}"
+
+                        lines << "- ${r.file} -> CPU=${cpu}s, Session=${session}s, Status=${status}"
+
                         if (r.mlResult?.error) {
-                            lines << "  - ML Error: ${r.mlResult.error}"
+                            lines << "  ML Error: ${r.mlResult.error}"
                         }
                     }
+
                     lines << ""
-                    lines << "Thresholds: SLA_THRESHOLD=${env.SLA_THRESHOLD}s, SESSION_THRESHOLD=${env.SESSION_THRESHOLD}s"
+                    lines << "Thresholds:"
+                    lines << "CPU <= ${env.SLA_THRESHOLD}s"
+                    lines << "Session <= ${env.SESSION_THRESHOLD}s"
 
                     def summaryMsg = lines.join("\n")
+
                     echo summaryMsg
+
                     env.SLA_SUMMARY = summaryMsg
 
                     if (breached) {
-                        echo "SLA BREACHED for at least one COBOL program. [pipeline v2]"
+
+                        echo "SLA BREACHED for at least one COBOL program."
+
+                        currentBuild.result = 'FAILURE'
+
                         error("SLA breached; failing build.")
+
                     } else {
-                        echo "All analyzed COBOL programs are within SLA. [pipeline v2]"
+
+                        echo "All analyzed COBOL programs are within SLA."
                     }
                 }
             }
+        }
+    }
+
+    post {
+
+        always {
+
+            archiveArtifacts artifacts: 'ci-result.json', allowEmptyArchive: true
+
+            echo "Pipeline execution completed."
+        }
+
+        failure {
+
+            echo "Build failed due to SLA breach or analysis error."
+        }
+
+        success {
+
+            echo "Build passed successfully."
         }
     }
 }
