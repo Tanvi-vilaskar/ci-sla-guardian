@@ -22,10 +22,16 @@ pipeline {
             }
         }
 
+        stage('Install Python dependencies') {
+            steps {
+                // Install all required Python packages for predict.py
+                bat 'pip install -r requirements.txt'
+            }
+        }
+
         stage('Detect changed COBOL files') {
             steps {
                 script {
-                    // Get diff vs main (or previous commit as fallback)
                     def diffRaw = bat(
                         script: 'git diff --name-only origin/main...HEAD || git diff --name-only HEAD~1',
                         returnStdout: true
@@ -34,8 +40,6 @@ pipeline {
                     echo "Raw diff output:\n${diffRaw}"
 
                     def diff = diffRaw ? diffRaw.split('\n') : []
-
-                    // Pick only COBOL files (case-insensitive)
                     def cobol = diff.findAll { f ->
                         f.toLowerCase().endsWith('.cbl') || f.toLowerCase().endsWith('.cob')
                     }
@@ -66,22 +70,17 @@ pipeline {
             }
             steps {
                 script {
-                    // 1) Read raw contents (may include dotenvx banner)
                     def raw = readFile 'ci-result.json'
                     echo "Raw ci-result.json:\n${raw}"
 
-                    // 2) Find first '{' and keep from there onwards
                     def braceIndex = raw.indexOf('{')
                     if (braceIndex < 0) {
                         echo "ci-result.json does not contain a JSON object start: ${raw}"
                         error("SLA summary failed: no JSON object found in ci-result.json")
                     }
                     def jsonText = raw.substring(braceIndex).trim()
-
-                    // 3) Overwrite file with clean JSON
                     writeFile file: 'ci-result.json', text: jsonText
 
-                    // 4) Parse JSON
                     def json = readJSON file: 'ci-result.json'
                     def breached = json.results.any { it.breached }
 
