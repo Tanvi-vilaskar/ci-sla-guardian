@@ -10,6 +10,7 @@
        01  M            PIC S9(9) COMP VALUE 0.
        01  N            PIC S9(9) COMP VALUE 0.
        01  O            PIC S9(9) COMP VALUE 0.
+       01  P            PIC S9(9) COMP VALUE 0.
        01  SUM          PIC S9(18) COMP VALUE 0.
        01  TEMP         PIC S9(18) COMP VALUE 0.
 
@@ -22,8 +23,12 @@
                     PERFORM VARYING L FROM 1 BY 1 UNTIL L > 50
                        PERFORM VARYING M FROM 1 BY 1 UNTIL M > 25
                           PERFORM VARYING N FROM 1 BY 1 UNTIL N > 10
-                                COMPUTE TEMP = I * J + K * L + M * N + O
-                                ADD TEMP TO SUM
+                             PERFORM VARYING O FROM 1 BY 1 UNTIL O > 5
+                               PERFORM VARYING P FROM 1 BY 1 UNTIL P > 3
+                                 COMPUTE TEMP = I * J + K * L + M * N 
+                                   ADD TEMP TO SUM
+                                END-PERFORM
+                             END-PERFORM
                           END-PERFORM
                        END-PERFORM
                     END-PERFORM
