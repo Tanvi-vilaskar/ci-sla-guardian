@@ -50,34 +50,49 @@ pipeline {
         }
 
         stage('Summarize result') {
-            when {
-                expression { env.COBOL_FILES?.trim() }
+    when {
+        expression { env.COBOL_FILES?.trim() }
+    }
+    steps {
+        script {
+            // 1) Read raw file (includes dotenvx banner)
+            def raw = readFile 'ci-result.json'
+
+            // 2) Keep only from first '{' onwards (discard the banner line)
+            def braceIndex = raw.indexOf('{')
+            if (braceIndex < 0) {
+                echo "ci-result.json does not contain JSON: ${raw}"
+                error("SLA summary failed: no JSON object found")
             }
-            steps {
-                script {
-                    def json = readJSON file: 'ci-result.json'
-                    def breached = json.results.any { it.breached }
+            def jsonText = raw.substring(braceIndex).trim()
 
-                    if (breached) {
-                        echo "SLA BREACHED for at least one COBOL program."
-                    } else {
-                        echo "All analyzed COBOL programs are within SLA."
-                    }
+            // 3) Overwrite file with clean JSON
+            writeFile file: 'ci-result.json', text: jsonText
 
-                    json.results.each { r ->
-                        def cpu = r.mlResult?.cpu_time ?: 0
-                        def session = r.mlResult?.session_time ?: 0
-                        echo "File ${r.file}: CPU=${cpu}s, Session=${session}s, breached=${r.breached}"
-                        if (r.aiSummary) {
-                            echo "AI Suggestions: ${r.aiSummary}"
-                        }
-                    }
+            // 4) Now parse it safely
+            def json = readJSON file: 'ci-result.json'
+            def breached = json.results.any { it.breached }
 
-                    if (breached) {
-                        error("SLA breached; failing build.")
-                    }
+            if (breached) {
+                echo "SLA BREACHED for at least one COBOL program."
+            } else {
+                echo "All analyzed COBOL programs are within SLA."
+            }
+
+            json.results.each { r ->
+                def cpu = r.mlResult?.cpu_time ?: 0
+                def session = r.mlResult?.session_time ?: 0
+                echo "File ${r.file}: CPU=${cpu}s, Session=${session}s, breached=${r.breached}"
+                if (r.aiSummary) {
+                    echo "AI Suggestions: ${r.aiSummary}"
                 }
             }
+
+            if (breached) {
+                error("SLA breached; failing build.")
+            }
         }
+    }
+}
     }
 }
