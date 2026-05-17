@@ -88,10 +88,19 @@ pipeline {
 
                     def json = readJSON file: 'ci-result.json'
 
-                    def breachedFlags = json.results.collect { r -> r.breached ? true : false }
+                    // Normalize breached flags
+                    def breachedFlags = []
+                    if (json.results instanceof List) {
+                        breachedFlags = json.results.collect { r ->
+                            r?.breached ? true : false
+                        }
+                    } else {
+                        echo "Warning: json.results is not a list: ${json.results}"
+                    }
                     echo "Debug: breached flags = ${breachedFlags}"
                     def breached = breachedFlags.contains(true)
 
+                    // Build human-readable summary
                     def lines = []
                     lines << "SLA analysis for PR:"
                     lines << ""
@@ -100,7 +109,6 @@ pipeline {
                         def session = r.mlResult?.session_time ?: 0
                         def status  = (r.breached ? "BREACHED" : "OK")
 
-                        // Hottest statements come from runAnalysis.js
                         def hottestList = r.hottestStatements ?: []
                         def hottest = hottestList
                                 ? hottestList.max { (it.combined ?: 0) as BigDecimal }
@@ -110,7 +118,6 @@ pipeline {
 
                         if (hottest) {
                             lines << "  - Hottest stmt: line ${hottest.line}, type ${hottest.type}, combined CPU=${hottest.combined}"
-                            // General fallback suggestion
                             lines << "  - Suggestion: Consider reducing iterations or moving invariant work out of this statement's loop to lower CPU without changing logic."
                         }
 
@@ -136,7 +143,6 @@ pipeline {
         }
     }
 
-    // Post result back to PR as a comment
     post {
         always {
             script {
@@ -145,24 +151,28 @@ pipeline {
                 }
 
                 def prNumber = env.CHANGE_ID
-                def repo = "Tanvi-vilaskar/ci-sla-guardian"  // adjust if needed
+                def repo = "Tanvi-vilaskar/ci-sla-guardian"
                 def apiUrl = "https://api.github.com/repos/${repo}/issues/${prNumber}/comments"
 
                 writeFile file: 'sla-comment.txt', text: env.SLA_SUMMARY
 
-                withCredentials([string(credentialsId: 'github-token', variable: 'GHTOKEN')]) {
-                    bat """
-                    setlocal ENABLEDELAYEDEXPANSION
-                    set BODY=
-                    for /f "usebackq delims=" %%A in ("sla-comment.txt") do (
-                        set "BODY=!BODY!%%A\\n"
-                    )
-                    curl -H "Authorization: token %GHTOKEN%" ^
-                         -H "Content-Type: application/json" ^
-                         -d "{\\"body\\": \\"!BODY!\\n(Jenkins job: ${env.JOB_NAME} #${env.BUILD_NUMBER})\\"}" ^
-                         ${apiUrl}
-                    endlocal
-                    """
+                try {
+                    withCredentials([string(credentialsId: 'github-token', variable: 'GHTOKEN')]) {
+                        bat """
+                        setlocal ENABLEDELAYEDEXPANSION
+                        set BODY=
+                        for /f "usebackq delims=" %%A in ("sla-comment.txt") do (
+                            set "BODY=!BODY!%%A\\n"
+                        )
+                        curl -H "Authorization: token %GHTOKEN%" ^
+                             -H "Content-Type: application/json" ^
+                             -d "{\\"body\\": \\"!BODY!\\n(Jenkins job: ${env.JOB_NAME} #${env.BUILD_NUMBER})\\"}" ^
+                             ${apiUrl}
+                        endlocal
+                        """
+                    }
+                } catch (e) {
+                    echo "Skipping PR comment (credentials missing or curl error): ${e.getMessage()}"
                 }
             }
         }
