@@ -94,16 +94,20 @@ pipeline {
 
                     // 4) Parse JSON
                     def json = readJSON file: 'ci-result.json'
-                    def breached = json.results.any { it.breached }
+
+                    // Normalize breached flags to booleans
+                    def breachedFlags = json.results.collect { r -> r.breached ? true : false }
+                    echo "Debug: breached flags = ${breachedFlags}"
+                    def breached = breachedFlags.contains(true)
 
                     // 5) Build human-readable summary
                     def lines = []
                     lines << "SLA analysis for PR:"
                     lines << ""
                     json.results.each { r ->
-                        def cpu = r.mlResult?.cpu_time ?: 0
+                        def cpu     = r.mlResult?.cpu_time     ?: 0
                         def session = r.mlResult?.session_time ?: 0
-                        def status = r.breached ? "BREACHED" : "OK"
+                        def status  = (r.breached ? "BREACHED" : "OK")
                         lines << "- `${r.file}` → CPU=${cpu}s, Session=${session}s, Status=${status}"
                         if (r.mlResult?.error) {
                             lines << "  - ML Error: ${r.mlResult.error}"
