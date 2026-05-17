@@ -74,9 +74,11 @@ pipeline {
             }
             steps {
                 script {
+                    // 1) Read raw contents (may include dotenv banners)
                     def raw = readFile 'ci-result.json'
                     echo "Raw ci-result.json:\n${raw}"
 
+                    // 2) Find first '{' and keep from there onwards
                     def braceIndex = raw.indexOf('{')
                     if (braceIndex < 0) {
                         echo "ci-result.json does not contain a JSON object start: ${raw}"
@@ -84,27 +86,35 @@ pipeline {
                     }
                     def jsonText = raw.substring(braceIndex).trim()
 
+                    // 3) Overwrite file with clean JSON
                     writeFile file: 'ci-result.json', text: jsonText
 
+                    // 4) Parse JSON
                     def json = readJSON file: 'ci-result.json'
+                    echo "Debug: top-level keys = ${json.keySet()}"
+
+                    // Safely extract results list
+                    def results = []
+                    if (json.results instanceof List) {
+                        results = json.results
+                    } else if (json["results"] instanceof List) {
+                        results = json["results"]
+                    } else {
+                        echo "Warning: could not find results array in parsed JSON: ${json}"
+                    }
 
                     // Normalize breached flags
-                    def breachedFlags = []
-                    if (json.results instanceof List) {
-                        breachedFlags = json.results.collect { r ->
-                            r?.breached ? true : false
-                        }
-                    } else {
-                        echo "Warning: json.results is not a list: ${json.results}"
+                    def breachedFlags = results.collect { r ->
+                        r?.breached ? true : false
                     }
                     echo "Debug: breached flags = ${breachedFlags}"
                     def breached = breachedFlags.contains(true)
 
-                    // Build human-readable summary
+                    // 5) Build human-readable summary
                     def lines = []
                     lines << "SLA analysis for PR:"
                     lines << ""
-                    json.results.each { r ->
+                    results.each { r ->
                         def cpu     = r.mlResult?.cpu_time     ?: 0
                         def session = r.mlResult?.session_time ?: 0
                         def status  = (r.breached ? "BREACHED" : "OK")
