@@ -14,6 +14,22 @@ const SLA_THRESHOLD = Number(process.env.SLA_THRESHOLD || 5.0);
 const SESSION_THRESHOLD = Number(process.env.SESSION_THRESHOLD || 20.0);
 const LINE_CPU_THRESHOLD = Number(process.env.LINE_CPU_THRESHOLD || 15);
 
+// Keep only the feature groups visible in the dashboard
+function slimFeatures(features) {
+  if (!features) return {};
+
+  return {
+    codeMetrics: features.codeMetrics || {},
+    loopAnalysis: features.loopAnalysis || {},
+    fileIO: features.fileIO || {},
+    controlFlow: features.controlFlow || {},
+    sqlOperations: features.sqlOperations || {},
+    operationsAndFunctions: features.operationsAndFunctions || {},
+    // If you want program name available, uncomment this:
+    // summary: { programId: features.summary?.programId },
+  };
+}
+
 async function analyzeFile(filePath) {
   const source = fs.readFileSync(filePath, "utf8");
   const analyzer = new CobolAnalyzer(source, filePath);
@@ -128,7 +144,8 @@ async function analyzeFile(filePath) {
     file: filePath,
     syntaxErrors,
     deadIssues,
-    features,
+    // Only expose dashboard-visible groups
+    features: slimFeatures(features),
     mlResult,
     lineByLineResults,
     aiSummary,
