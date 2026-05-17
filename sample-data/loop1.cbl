@@ -52,9 +52,3 @@
                    END-PERFORM
                END-PERFORM
            END-PERFORM.
-
-       UNUSED-LOGIC.
-           DISPLAY 'THIS IS DEAD CODE - NEVER EXECUTED'.
-           MOVE 999999 TO WS-I
-           MOVE 999999 TO WS-J
-           MOVE 999999 TO WS-K.
