@@ -62,7 +62,7 @@ pipeline {
                 expression { env.COBOL_FILES?.trim() }
             }
             steps {
-                // Run analysis, but do not stop the pipeline on non-zero exit code
+                // Run analysis, but do not stop the pipeline on non-zero exit code from Node
                 bat """
                 node ci/runAnalysis.js ${env.COBOL_FILES} > ci-result.json
                 echo NODE_EXIT=%ERRORLEVEL%
@@ -77,7 +77,7 @@ pipeline {
             }
             steps {
                 script {
-                    // 1) Read raw contents (may include dotenv banners)
+                    // 1) Read raw contents (may include banners)
                     def raw = readFile 'ci-result.json'
                     echo "Raw ci-result.json:\n${raw}"
 
@@ -96,7 +96,7 @@ pipeline {
                     def json = readJSON file: 'ci-result.json'
                     def breached = json.results.any { it.breached }
 
-                    // Build a human-readable summary for console / PR
+                    // 5) Build human-readable summary
                     def lines = []
                     lines << "SLA analysis for PR:"
                     lines << ""
