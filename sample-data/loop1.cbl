@@ -6,6 +6,7 @@
        01  WS-I         PIC 9(6)   VALUE 0.
        01  WS-J         PIC 9(6)   VALUE 0.
        01  WS-K         PIC 9(6)   VALUE 0.
+       01  WS-L         PIC 9(6)   VALUE 0.
        01  WS-TOTAL     PIC 9(18)  VALUE 0.
        01  WS-TEMP      PIC 9(18)  VALUE 0.
        01  WS-FLAG      PIC X      VALUE 'N'.
@@ -36,23 +37,21 @@
        CALCULATION-LOOP.
            PERFORM VARYING WS-K FROM 1 BY 1
                UNTIL WS-K > 20
-               PERFORM VARYING WS-J FROM 1 BY 1
-                 UNTIL WS-J > 600
-                 PERFORM VARYING WS-J FROM 1 BY 1
-                   UNTIL WS-J > 600
-
-                IF WS-FLAG = 'Y'
-                    COMPUTE WS-TEMP =
-                        (WS-I * WS-J) + WS-K
-                ELSE
-                    COMPUTE WS-TEMP =
-                        (WS-I + WS-J) * WS-K
-                END-IF
-                ADD WS-TEMP TO WS-TOTAL
-                 END-PERFORM
+               PERFORM VARYING WS-L FROM 1 BY 1
+                   UNTIL WS-L > 10
+                   PERFORM VARYING WS-J FROM 1 BY 1
+                       UNTIL WS-J > 600
+                       IF WS-FLAG = 'Y'
+                           COMPUTE WS-TEMP =
+                               (WS-I * WS-J) + WS-K + WS-L
+                       ELSE
+                           COMPUTE WS-TEMP =
+                               (WS-I + WS-J + WS-L) * WS-K
+                       END-IF
+                       ADD WS-TEMP TO WS-TOTAL
+                   END-PERFORM
                END-PERFORM
            END-PERFORM.
-
 
        UNUSED-LOGIC.
            DISPLAY 'THIS IS DEAD CODE - NEVER EXECUTED'.
