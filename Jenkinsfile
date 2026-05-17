@@ -31,7 +31,6 @@ pipeline {
         stage('Detect changed COBOL files') {
             steps {
                 script {
-                    // Try diff vs origin/main; fall back to previous commit
                     def diffRaw = bat(
                         script: 'git diff --name-only origin/main...HEAD || git diff --name-only HEAD~1',
                         returnStdout: true
@@ -41,7 +40,6 @@ pipeline {
 
                     def diff = diffRaw ? diffRaw.split('\n') : []
 
-                    // Pick only COBOL files (case-insensitive)
                     def cobol = diff.findAll { f ->
                         f.toLowerCase().endsWith('.cbl') || f.toLowerCase().endsWith('.cob')
                     }
@@ -62,7 +60,6 @@ pipeline {
                 expression { env.COBOL_FILES?.trim() }
             }
             steps {
-                // Run analysis, but do not stop the pipeline on non-zero exit code from Node
                 bat """
                 node ci/runAnalysis.js ${env.COBOL_FILES} > ci-result.json
                 echo NODE_EXIT=%ERRORLEVEL%
@@ -77,11 +74,9 @@ pipeline {
             }
             steps {
                 script {
-                    // 1) Read raw contents (may include banners)
                     def raw = readFile 'ci-result.json'
                     echo "Raw ci-result.json:\n${raw}"
 
-                    // 2) Find first '{' and keep from there onwards
                     def braceIndex = raw.indexOf('{')
                     if (braceIndex < 0) {
                         echo "ci-result.json does not contain a JSON object start: ${raw}"
@@ -89,18 +84,14 @@ pipeline {
                     }
                     def jsonText = raw.substring(braceIndex).trim()
 
-                    // 3) Overwrite file with clean JSON
                     writeFile file: 'ci-result.json', text: jsonText
 
-                    // 4) Parse JSON
                     def json = readJSON file: 'ci-result.json'
 
-                    // Normalize breached flags to booleans
                     def breachedFlags = json.results.collect { r -> r.breached ? true : false }
                     echo "Debug: breached flags = ${breachedFlags}"
                     def breached = breachedFlags.contains(true)
 
-                    // 5) Build human-readable summary
                     def lines = []
                     lines << "SLA analysis for PR:"
                     lines << ""
@@ -108,7 +99,21 @@ pipeline {
                         def cpu     = r.mlResult?.cpu_time     ?: 0
                         def session = r.mlResult?.session_time ?: 0
                         def status  = (r.breached ? "BREACHED" : "OK")
+
+                        // Hottest statements come from runAnalysis.js
+                        def hottestList = r.hottestStatements ?: []
+                        def hottest = hottestList
+                                ? hottestList.max { (it.combined ?: 0) as BigDecimal }
+                                : null
+
                         lines << "- `${r.file}` → CPU=${cpu}s, Session=${session}s, Status=${status}"
+
+                        if (hottest) {
+                            lines << "  - Hottest stmt: line ${hottest.line}, type ${hottest.type}, combined CPU=${hottest.combined}"
+                            // General fallback suggestion
+                            lines << "  - Suggestion: Consider reducing iterations or moving invariant work out of this statement's loop to lower CPU without changing logic."
+                        }
+
                         if (r.mlResult?.error) {
                             lines << "  - ML Error: ${r.mlResult.error}"
                         }
@@ -126,6 +131,38 @@ pipeline {
                     } else {
                         echo "All analyzed COBOL programs are within SLA. [pipeline v2]"
                     }
+                }
+            }
+        }
+    }
+
+    // Post result back to PR as a comment
+    post {
+        always {
+            script {
+                if (!env.CHANGE_ID || !env.SLA_SUMMARY) {
+                    return
+                }
+
+                def prNumber = env.CHANGE_ID
+                def repo = "Tanvi-vilaskar/ci-sla-guardian"  // adjust if needed
+                def apiUrl = "https://api.github.com/repos/${repo}/issues/${prNumber}/comments"
+
+                writeFile file: 'sla-comment.txt', text: env.SLA_SUMMARY
+
+                withCredentials([string(credentialsId: 'github-token', variable: 'GHTOKEN')]) {
+                    bat """
+                    setlocal ENABLEDELAYEDEXPANSION
+                    set BODY=
+                    for /f "usebackq delims=" %%A in ("sla-comment.txt") do (
+                        set "BODY=!BODY!%%A\\n"
+                    )
+                    curl -H "Authorization: token %GHTOKEN%" ^
+                         -H "Content-Type: application/json" ^
+                         -d "{\\"body\\": \\"!BODY!\\n(Jenkins job: ${env.JOB_NAME} #${env.BUILD_NUMBER})\\"}" ^
+                         ${apiUrl}
+                    endlocal
+                    """
                 }
             }
         }
