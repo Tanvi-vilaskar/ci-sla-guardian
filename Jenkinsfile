@@ -25,7 +25,7 @@ pipeline {
         stage('Install Python dependencies') {
             steps {
                 // Install all required Python packages for predict.py
-                bat 'pip install -r requirements.txt'
+                bat 'pip install -r requirement.txt'
             }
         }
 
