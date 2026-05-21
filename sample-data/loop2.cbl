@@ -20,13 +20,11 @@
                  PERFORM VARYING K FROM 1 BY 1 UNTIL K > 100
                     PERFORM VARYING L FROM 1 BY 1 UNTIL L > 50
                        PERFORM VARYING M FROM 1 BY 1 UNTIL M > 25
-                          PERFORM VARYING N FROM 1 BY 1 UNTIL N > 10
                              COMPUTE TEMP =
                                    I * J
                                  + K * L
                                  + M * N
                              ADD TEMP TO SUM1
-                          END-PERFORM
                        END-PERFORM
                     END-PERFORM
                  END-PERFORM
