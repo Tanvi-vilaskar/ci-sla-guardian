@@ -144,8 +144,6 @@ pipeline {
                         linesOut << ""
                     }
 
-                    linesOut << "Thresholds: SLA_THRESHOLD=${env.SLA_THRESHOLD}s, SESSION_THRESHOLD=${env.SESSION_THRESHOLD}s"
-
                     def summaryMsg = linesOut.join("\n")
                     echo summaryMsg
                     env.SLA_SUMMARY = summaryMsg
