@@ -31,7 +31,8 @@ pipeline {
             steps {
                 script {
                     def diffRaw = bat(
-                        script: "\"${env.GIT_EXE}\" diff --name-only origin/main...HEAD || \"${env.GIT_EXE}\" diff --name-only HEAD~1",
+                         script: 'git diff --name-only origin/main...HEAD || git diff --name-only HEAD~1',
+
                         returnStdout: true
                     ).trim()
 
