@@ -6,6 +6,8 @@ pipeline {
         SESSION_THRESHOLD  = "20.0"
         LINE_CPU_THRESHOLD = "15"
         SLA_AI_ENABLED     = "true"
+        GROQ_API_KEY       = credentials('groq-api-key')
+        GROQ_MODEL         = "llama-3.3-70b-versatile"
     }
 
     stages {
@@ -31,8 +33,7 @@ pipeline {
             steps {
                 script {
                     def diffRaw = bat(
-                         script: 'git diff --name-only origin/main...HEAD || git diff --name-only HEAD~1',
-
+                        script: 'git diff --name-only origin/main...HEAD 2>nul || git diff --name-only HEAD~1',
                         returnStdout: true
                     ).trim()
 
@@ -170,7 +171,6 @@ pipeline {
                 def prNumber = env.CHANGE_ID
                 def repo = "Tanvi-vilaskar/ci-sla-guardian"
                 def apiUrl = "https://api.github.com/repos/${repo}/issues/${prNumber}/comments"
-
 
                 writeFile file: 'sla-comment.txt', text: env.SLA_SUMMARY
 
