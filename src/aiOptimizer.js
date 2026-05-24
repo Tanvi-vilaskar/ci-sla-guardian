@@ -1,7 +1,5 @@
 "use strict";
 
-const USE_REAL_SERVER = process.env.SLA_AI_ENABLED === "true";
-
 const path = require("path");
 const fetch = require("node-fetch");
 require("dotenv").config({
@@ -138,10 +136,10 @@ function fallbackSuggestions(riskyStatements) {
   };
 }
 
-async function getOptimizationSuggestions(sourceCode, riskyStatements, metadata) {
-  if (!USE_REAL_SERVER) {
+async function getOptimizationSuggestions(sourceCode, riskyStatements, metadata = {}) {
+  if (!Array.isArray(riskyStatements) || riskyStatements.length === 0) {
     return {
-      summary: "LLM response unavailable. Returning safe fallback guidance.",
+      summary: "No HIGH CPU-risk statements detected.",
       hotspots: [],
     };
   }

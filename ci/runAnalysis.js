@@ -13,7 +13,6 @@ const SLA_THRESHOLD = Number(process.env.SLA_THRESHOLD || 5.0);
 const SESSION_THRESHOLD = Number(process.env.SESSION_THRESHOLD || 20.0);
 const LINE_CPU_THRESHOLD = Number(process.env.LINE_CPU_THRESHOLD || 15);
 
-// Only keep panels that are shown on the dashboard
 function slimFeatures(features) {
   if (!features) return {};
 
@@ -27,18 +26,21 @@ function slimFeatures(features) {
   };
 }
 
-// Pick top N hottest statements by combined CPU
 function topHottestStatements(lineByLineResults, maxCount = 3) {
   if (!Array.isArray(lineByLineResults) || lineByLineResults.length === 0) {
     return [];
   }
-  const sorted = [...lineByLineResults].sort((a, b) =>
-    Number(b.combined || 0) - Number(a.combined || 0)
+
+  const sorted = [...lineByLineResults].sort(
+    (a, b) => Number(b.combined || 0) - Number(a.combined || 0)
   );
+
   return sorted.slice(0, maxCount).map((s) => ({
     line: s.line,
     type: s.type,
     combined: s.combined,
+    attributed: s.attributed || 0,
+    executed: s.executed || 0,
   }));
 }
 
@@ -56,6 +58,7 @@ async function analyzeFile(filePath) {
       lineByLineResults: [],
       hottestStatements: [],
       aiSummary: "Could not read source file.",
+      aiSuggestions: [],
       breached: false,
     };
   }
@@ -69,6 +72,7 @@ async function analyzeFile(filePath) {
   let mlResult = null;
   let lineByLineResults = [];
   let aiSummary = "";
+  let aiSuggestions = [];
   let breached = false;
 
   if (isClean) {
@@ -86,7 +90,6 @@ async function analyzeFile(filePath) {
       (io.delete || 0) +
       (io.start || 0);
 
-    // PROGRAM-LEVEL PREDICTION
     try {
       const programResp = await predict(
         {
@@ -95,10 +98,7 @@ async function analyzeFile(filePath) {
           totalPerforms: lp.totalPerforms || 0,
           fileIOCount,
           ifCount: cf.ifStatements || 0,
-          functionCalls:
-            cf.callStatements ??
-            of.builtInFunctionCalls ??
-            0,
+          functionCalls: cf.callStatements ?? of.builtInFunctionCalls ?? 0,
           arithmeticOps: of.totalArithmetic || 0,
         },
         "program"
@@ -109,8 +109,7 @@ async function analyzeFile(filePath) {
       } else {
         mlResult = {
           error:
-            (programResp && programResp.error) ||
-            "Program prediction failed",
+            (programResp && programResp.error) || "Program prediction failed",
         };
       }
     } catch (e) {
@@ -123,7 +122,6 @@ async function analyzeFile(filePath) {
     const sessionBreached = session > SESSION_THRESHOLD;
     breached = cpuBreached || sessionBreached;
 
-    // STATEMENT-LEVEL PREDICTION
     try {
       const extractor = new FeatureExtractor(
         { ...features, deadIssues },
@@ -182,13 +180,8 @@ async function analyzeFile(filePath) {
       });
     }
 
-    // HOTTEST statements (always computed, even if LLM is down)
-    const hottestStatements = topHottestStatements(
-      lineByLineResults,
-      3
-    );
+    const hottestStatements = topHottestStatements(lineByLineResults, 3);
 
-    // AI suggestions: for now rely on fallbackSuggestions when LLM not available
     try {
       const ai = await getOptimizationSuggestions(
         source,
@@ -196,6 +189,8 @@ async function analyzeFile(filePath) {
           line: h.line,
           type: h.type,
           combined: h.combined,
+          attributed: h.attributed,
+          executed: h.executed,
         })),
         {
           programName:
@@ -207,14 +202,18 @@ async function analyzeFile(filePath) {
         }
       );
 
-      aiSummary =
-        typeof ai === "string"
-          ? ai
-          : (ai && ai.summary) ||
-            "LLM response unavailable. Returning safe fallback guidance.";
+      if (typeof ai === "string") {
+        aiSummary = ai;
+        aiSuggestions = [];
+      } else {
+        aiSummary =
+          (ai && ai.summary) ||
+          "LLM response unavailable. Returning safe fallback guidance.";
+        aiSuggestions = Array.isArray(ai?.hotspots) ? ai.hotspots : [];
+      }
     } catch (e) {
-      aiSummary =
-        "LLM response unavailable. Returning safe fallback guidance.";
+      aiSummary = "LLM response unavailable. Returning safe fallback guidance.";
+      aiSuggestions = [];
     }
 
     return {
@@ -226,11 +225,11 @@ async function analyzeFile(filePath) {
       lineByLineResults,
       hottestStatements,
       aiSummary,
+      aiSuggestions,
       breached,
     };
   }
 
-  // If syntax errors, no ML
   return {
     file: filePath,
     syntaxErrors,
@@ -240,12 +239,14 @@ async function analyzeFile(filePath) {
     lineByLineResults,
     hottestStatements: [],
     aiSummary: "Program has syntax errors; SLA analysis skipped.",
+    aiSuggestions: [],
     breached: false,
   };
 }
 
 async function main() {
   const files = process.argv.slice(2);
+
   if (files.length === 0) {
     console.error("Usage: node ci/runAnalysis.js <file1.cbl> [file2.cbl...]");
     process.exit(1);
@@ -264,8 +265,8 @@ async function main() {
         mlResult: { error: `Fatal analyze error: ${e.message}` },
         lineByLineResults: [],
         hottestStatements: [],
-        aiSummary:
-          "LLM response unavailable. Returning safe fallback guidance.",
+        aiSummary: "LLM response unavailable. Returning safe fallback guidance.",
+        aiSuggestions: [],
         breached: false,
       });
     }
@@ -294,6 +295,7 @@ if (require.main === module) {
               hottestStatements: [],
               aiSummary:
                 "LLM response unavailable. Returning safe fallback guidance.",
+              aiSuggestions: [],
               breached: false,
             },
           ],

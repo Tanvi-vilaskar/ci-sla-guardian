@@ -2,14 +2,13 @@ pipeline {
     agent any
 
     environment {
-        SLA_THRESHOLD       = "5.0"
-        SESSION_THRESHOLD   = "20.0"
-        LINE_CPU_THRESHOLD  = "15"
-        SLA_AI_ENABLED      = "false"
+        SLA_THRESHOLD      = "5.0"
+        SESSION_THRESHOLD  = "20.0"
+        LINE_CPU_THRESHOLD = "15"
+        SLA_AI_ENABLED     = "true"
     }
 
     stages {
-
         stage('Checkout') {
             steps {
                 checkout scm
@@ -24,7 +23,7 @@ pipeline {
 
         stage('Install Python dependencies') {
             steps {
-                bat 'pip install -r requirement.txt'
+                bat 'python -m pip install -r requirement.txt'
             }
         }
 
@@ -32,16 +31,17 @@ pipeline {
             steps {
                 script {
                     def diffRaw = bat(
-                        script: 'git diff --name-only origin/main...HEAD || git diff --name-only HEAD~1',
+                        script: "\"${env.GIT_EXE}\" diff --name-only origin/main...HEAD || \"${env.GIT_EXE}\" diff --name-only HEAD~1",
                         returnStdout: true
                     ).trim()
 
                     echo "Raw diff output:\n${diffRaw}"
 
-                    def diff = diffRaw ? diffRaw.split('\n') : []
+                    def diff = diffRaw ? diffRaw.readLines() : []
 
                     def cobol = diff.findAll { f ->
-                        f.toLowerCase().endsWith('.cbl') || f.toLowerCase().endsWith('.cob')
+                        def file = f.trim().toLowerCase()
+                        file.endsWith('.cbl') || file.endsWith('.cob')
                     }
 
                     env.COBOL_FILES = cobol.join(' ')
@@ -63,6 +63,12 @@ pipeline {
                 bat """
                 node ci/runAnalysis.js ${env.COBOL_FILES} > ci-result.json
                 echo NODE_EXIT=%ERRORLEVEL%
+                if exist ci-result.json (
+                    echo ci-result.json generated successfully
+                ) else (
+                    echo ci-result.json was not generated
+                    exit /b 1
+                )
                 exit /b 0
                 """
             }
@@ -74,79 +80,79 @@ pipeline {
             }
             steps {
                 script {
-                    // 1) Read raw contents (may include dotenv banners)
-                    def raw = readFile 'ci-result.json'
+                    def raw = readFile('ci-result.json')
                     echo "Raw ci-result.json:\n${raw}"
 
-                    // 2) Find first '{' and keep from there onwards
-                    def braceIndex = raw.indexOf('{')
-                    if (braceIndex < 0) {
-                        echo "ci-result.json does not contain a JSON object start: ${raw}"
+                    def lines = raw.readLines()
+                    def startIndex = lines.findIndexOf { it.trim().startsWith('{') }
+
+                    if (startIndex < 0) {
                         error("SLA summary failed: no JSON object found in ci-result.json")
                     }
-                    def jsonText = raw.substring(braceIndex).trim()
 
-                    // 3) Overwrite file with clean JSON
+                    def jsonText = lines.drop(startIndex).join('\n').trim()
                     writeFile file: 'ci-result.json', text: jsonText
 
-                    // 4) Parse JSON
                     def json = readJSON file: 'ci-result.json'
                     echo "Debug: top-level keys = ${json.keySet()}"
 
-                    // Safely extract results list
-                    def results = []
-                    if (json.results instanceof List) {
-                        results = json.results
-                    } else if (json["results"] instanceof List) {
-                        results = json["results"]
-                    } else {
-                        echo "Warning: could not find results array in parsed JSON: ${json}"
-                    }
-
-                    // Normalize breached flags
-                    def breachedFlags = results.collect { r ->
-                        r?.breached ? true : false
-                    }
-                    echo "Debug: breached flags = ${breachedFlags}"
+                    def results = (json.results instanceof List) ? json.results : []
+                    def breachedFlags = results.collect { r -> r?.breached ? true : false }
                     def breached = breachedFlags.contains(true)
 
-                    // 5) Build human-readable summary
-                    def lines = []
-                    lines << "SLA analysis for PR:"
-                    lines << ""
+                    echo "Debug: breached flags = ${breachedFlags}"
+
+                    def linesOut = []
+                    linesOut << "SLA analysis for PR:"
+                    linesOut << ""
+
                     results.each { r ->
-                        def cpu     = r.mlResult?.cpu_time     ?: 0
+                        def cpu = r.mlResult?.cpu_time ?: 0
                         def session = r.mlResult?.session_time ?: 0
-                        def status  = (r.breached ? "BREACHED" : "OK")
+                        def status = r.breached ? "BREACHED" : "OK"
 
                         def hottestList = r.hottestStatements ?: []
-                        def hottest = hottestList
-                                ? hottestList.max { (it.combined ?: 0) as BigDecimal }
-                                : null
+                        def hottest = hottestList ? hottestList.max { (it.combined ?: 0) as BigDecimal } : null
 
-                        lines << "- `${r.file}` → CPU=${cpu}s, Session=${session}s, Status=${status}"
+                        linesOut << "- `${r.file}` -> CPU=${cpu}s, Session=${session}s, Status=${status}"
 
                         if (hottest) {
-                            lines << "  - Hottest stmt: line ${hottest.line}, type ${hottest.type}, combined CPU=${hottest.combined}"
-                            lines << "  - Suggestion: Consider reducing iterations or moving invariant work out of this statement's loop to lower CPU without changing logic."
+                            linesOut << "  - Hottest stmt: line ${hottest.line}, type ${hottest.type}, combined CPU=${hottest.combined}"
+                        }
+
+                        if (r.aiSummary) {
+                            linesOut << "  - AI Summary: ${r.aiSummary}"
+                        }
+
+                        def aiSuggestions = r.aiSuggestions ?: []
+                        if (aiSuggestions && aiSuggestions.size() > 0) {
+                            def topSuggestionBlock = aiSuggestions[0]
+                            def topSuggestion = topSuggestionBlock?.suggestions ? topSuggestionBlock.suggestions[0] : null
+                            if (topSuggestion) {
+                                linesOut << "  - Suggestion: ${topSuggestion.suggestion}"
+                                linesOut << "  - Reason: ${topSuggestion.reason}"
+                                linesOut << "  - Safety: ${topSuggestion.safety}"
+                            }
                         }
 
                         if (r.mlResult?.error) {
-                            lines << "  - ML Error: ${r.mlResult.error}"
+                            linesOut << "  - ML Error: ${r.mlResult.error}"
                         }
-                    }
-                    lines << ""
-                    lines << "Thresholds: SLA_THRESHOLD=${env.SLA_THRESHOLD}s, SESSION_THRESHOLD=${env.SESSION_THRESHOLD}s"
 
-                    def summaryMsg = lines.join("\n")
+                        linesOut << ""
+                    }
+
+                    linesOut << "Thresholds: SLA_THRESHOLD=${env.SLA_THRESHOLD}s, SESSION_THRESHOLD=${env.SESSION_THRESHOLD}s"
+
+                    def summaryMsg = linesOut.join("\n")
                     echo summaryMsg
                     env.SLA_SUMMARY = summaryMsg
 
                     if (breached) {
-                        echo "SLA BREACHED for at least one COBOL program. [pipeline v2]"
+                        echo "SLA BREACHED for at least one COBOL program."
                         error("SLA breached; failing build.")
                     } else {
-                        echo "All analyzed COBOL programs are within SLA. [pipeline v2]"
+                        echo "All analyzed COBOL programs are within SLA."
                     }
                 }
             }
@@ -163,6 +169,7 @@ pipeline {
                 def prNumber = env.CHANGE_ID
                 def repo = "Tanvi-vilaskar/ci-sla-guardian"
                 def apiUrl = "https://api.github.com/repos/${repo}/issues/${prNumber}/comments"
+
 
                 writeFile file: 'sla-comment.txt', text: env.SLA_SUMMARY
 
