@@ -10,7 +10,6 @@ const BMC_INTEGRATION_PATH = process.env.BMC_INTEGRATION_PATH;
 const BMC_INTEGRATION_ID   = process.env.BMC_INTEGRATION_ID;
 const BMC_INTEGRATION_KEY  = process.env.BMC_INTEGRATION_KEY;
 const GROQ_API_KEY         = process.env.GROQ_API_KEY;
-// Default model — llama-3.3-70b-versatile is free-tier on Groq and strong for JSON tasks
 const GROQ_MODEL           = process.env.GROQ_MODEL || "llama-3.3-70b-versatile";
 const MAX_RISKY_LINES      = 10;
 
@@ -45,90 +44,137 @@ function dedupeRiskyStatements(riskyStatements) {
   return unique.slice(0, MAX_RISKY_LINES);
 }
 
-function buildContextWindow(sourceCode, lineNumber, radius = 3) {
+function buildContextWindow(sourceCode, lineNumber, radius = 5) {
   const lines = sourceCode.split(/\r?\n/);
   const start = Math.max(1, lineNumber - radius);
   const end   = Math.min(lines.length, lineNumber + radius);
 
   return Array.from({ length: end - start + 1 }, (_, idx) => {
     const current = start + idx;
-    return `${current}: ${lines[current - 1] || ""}`;
+    const marker  = current === lineNumber ? ">>>" : "   ";
+    return `${marker} ${current}: ${lines[current - 1] || ""}`;
   }).join("\n");
 }
 
-function buildPrompt(sourceCode, riskyStatements, metadata = {}) {
-  const limited      = dedupeRiskyStatements(riskyStatements);
-  const trimmedSource = sourceCode.slice(0, 12000);
+// ─────────────────────────────────────────────────────────────
+// NEW: Filter statements that breach the per-line SLA threshold
+// Only these lines get AI suggestions
+// ─────────────────────────────────────────────────────────────
 
-  const hotspotText = limited
-    .map((s, idx) => {
-      const context = buildContextWindow(sourceCode, s.line, 3);
-      return [
-        `Hotspot ${idx + 1}`,
-        `Line: ${s.line}`,
-        `Statement Type: ${s.type || "UNKNOWN"}`,
-        `Predicted Combined CPU: ${Number(s.combined || 0).toFixed(2)}%`,
-        `Predicted Attributed CPU: ${Number(s.attributed || 0).toFixed(2)}%`,
-        `Predicted Executed CPU: ${Number(s.executed || 0).toFixed(2)}%`,
-        `Source Line: ${s.code || ""}`,
-        `Context:\n${context}`,
-      ].join("\n");
+function filterBreachingLines(lineByLineResults, slaThreshold) {
+  const threshold = parseFloat(slaThreshold) || 5.0;
+
+  return (lineByLineResults || [])
+    .filter(stmt => {
+      const cpu = parseFloat(stmt.combined || stmt.executed || 0);
+      return cpu > threshold;
     })
-    .join("\n\n");
+    .sort((a, b) => {
+      // Sort by combined CPU descending — worst offender first
+      return (parseFloat(b.combined) || 0) - (parseFloat(a.combined) || 0);
+    })
+    .slice(0, MAX_RISKY_LINES);
+}
+
+// ─────────────────────────────────────────────────────────────
+// UPDATED: buildPrompt — generalized for any program,
+// only for lines whose CPU breaches SLA threshold
+// ─────────────────────────────────────────────────────────────
+
+function buildPrompt(sourceCode, breachingLines, metadata = {}) {
+  const threshold = parseFloat(metadata.slaThreshold) || 5.0;
+
+  // Build per-line section with full context
+  const hotspotText = breachingLines.map((stmt, idx) => {
+    const loopDepth = metadata.lineDepthMap
+      ? (metadata.lineDepthMap[String(stmt.line)] ?? "unknown")
+      : "unknown";
+
+    const isInsideLoop = metadata.lineInsideLoop
+      ? (metadata.lineInsideLoop[String(stmt.line)] === 1 ? "YES" : "NO")
+      : "unknown";
+
+    const context = buildContextWindow(sourceCode, stmt.line, 5);
+
+    return [
+      `--- Breaching Line ${idx + 1} of ${breachingLines.length} ---`,
+      `Line Number   : ${stmt.line}`,
+      `Statement Type: ${stmt.type || "UNKNOWN"}`,
+      `Combined CPU  : ${Number(stmt.combined || 0).toFixed(4)}s  ← breaches SLA threshold of ${threshold}s`,
+      `Attributed CPU: ${Number(stmt.attributed || 0).toFixed(4)}s`,
+      `Executed CPU  : ${Number(stmt.executed || 0).toFixed(4)}s`,
+      `Loop Depth    : ${loopDepth}`,
+      `Inside Loop   : ${isInsideLoop}`,
+      ``,
+      `Source context (>>> marks the breaching line):`,
+      context,
+    ].join("\n");
+  }).join("\n\n");
 
   return `
 You are a COBOL performance optimization expert for enterprise mainframe batch systems.
 
-Your task is to suggest safe CPU optimizations for only the listed high-risk COBOL lines.
+TASK:
+Analyze only the listed lines. Each line's CPU time exceeds the SLA threshold of ${threshold}s.
+Suggest safe, actionable optimizations for EACH breaching line based on its type, loop depth,
+and source context. Do NOT suggest optimizations for lines not listed below.
 
 STRICT RULES:
-1. Preserve business semantics exactly.
-2. Do not change validations, conditions, business rules, record counts, or financial logic.
-3. Do not suggest removing code, skipping logic, deleting statements, or bypassing checks.
-4. Do not suggest dead-code removal unless the input explicitly says a line is proven dead code.
-5. Give only 2 or 3 suggestions per hotspot.
-6. Focus on CPU-safe improvements such as loop efficiency, invariant calculation hoisting, repeated computation reduction, file I/O efficiency, DB2 access efficiency, working-storage reuse, and reducing repeated execution.
-7. Every suggestion must include: suggestion, reason, and safety level.
-8. If no safe suggestion is possible, say exactly: No safe optimization recommendation.
-9. Mention only the listed hotspot lines.
-10. Keep suggestions concise and enterprise-appropriate.
+1. Preserve business semantics exactly — never change logic, conditions, or financial rules.
+2. Do not suggest removing code, skipping validations, or bypassing business checks.
+3. Give exactly 2 suggestions per breaching line.
+4. Base suggestions on the ACTUAL statement type and loop context shown — be specific.
+5. For lines inside deep loops: focus on loop hoisting, invariant extraction, loop unrolling.
+6. For COMPUTE lines: focus on reducing repeated arithmetic, caching intermediate results.
+7. For ADD/SUBTRACT lines: focus on accumulator patterns, batching, reducing iteration count.
+8. For PERFORM lines: focus on reducing call overhead, inlining small paragraphs.
+9. For IF lines: focus on condition reordering, short-circuit evaluation.
+10. For file I/O lines: focus on buffering, blocking factor, access pattern.
+11. Every suggestion must have: suggestion (specific), reason (why it reduces CPU), safety (High/Medium/Low).
+12. If no safe optimization exists for a line, return: "No safe optimization recommendation."
 
 PROGRAM METADATA:
-- Program Name: ${metadata.programName || "UNKNOWN"}
-- Predicted Whole Program CPU: ${metadata.programCpuTime ?? "UNKNOWN"}
-- SLA Threshold: ${metadata.slaThreshold ?? "UNKNOWN"}
-- SLA Status: ${metadata.slaStatus || "UNKNOWN"}
+- Program Name        : ${metadata.programName || "UNKNOWN"}
+- Total Program CPU   : ${metadata.programCpuTime ?? "UNKNOWN"}s
+- SLA Threshold       : ${threshold}s
+- SLA Status          : ${metadata.slaStatus || "UNKNOWN"}
+- Cyclomatic Complexity: ${metadata.cyclomaticComplexity ?? "UNKNOWN"}
+- Max Loop Depth      : ${metadata.maxLoopDepth ?? "UNKNOWN"}
+- Total Nested Loops  : ${metadata.nestedLoopCount ?? "UNKNOWN"}
+- Estimated Iterations: ${metadata.estIterations ?? "UNKNOWN"}
+- Total PERFORM Loops : ${metadata.totalPerforms ?? "UNKNOWN"}
 
-Return valid JSON only in this format (no markdown fences, no extra text):
+BREACHING LINES (CPU > ${threshold}s — suggestions required for each):
+${hotspotText}
+
+Return valid JSON only — no markdown fences, no extra text:
 {
-  "summary": "short summary",
+  "summary": "one sentence: which lines breach SLA and the dominant pattern causing it",
   "hotspots": [
     {
-      "line": 123,
-      "type": "COMPUTE",
+      "line": <line_number>,
+      "type": "<statement_type>",
       "suggestions": [
         {
-          "suggestion": "text",
-          "reason": "text",
-          "safety": "High"
+          "suggestion": "specific actionable change referencing the actual code pattern",
+          "reason": "why this reduces CPU for this specific statement and loop context",
+          "safety": "High | Medium | Low"
         }
       ]
     }
   ]
 }
-
-HIGH-RISK HOTSPOTS:
-${hotspotText}
-
-FULL COBOL SOURCE FOR CONTEXT:
-${trimmedSource}
 `.trim();
 }
 
-function fallbackSuggestions(riskyStatements) {
+// ─────────────────────────────────────────────────────────────
+// Fallback suggestions (when both BMC and Groq fail)
+// ─────────────────────────────────────────────────────────────
+
+function fallbackSuggestions(breachingLines) {
   return {
     summary: "LLM response unavailable. Returning safe fallback guidance.",
-    hotspots: (riskyStatements || []).slice(0, 3).map((stmt) => ({
+    hotspots: (breachingLines || []).slice(0, 3).map((stmt) => ({
       line: stmt.line,
       type: stmt.type || "UNKNOWN",
       suggestions: [
@@ -159,9 +205,9 @@ async function callBMCLLM(userPrompt) {
   const url = `${BMC_INTEGRATION_PATH.replace(/\/$/, "")}/generate`;
 
   const headers = {
-    Authorization:   `Bearer ${BMC_INTEGRATION_KEY}`,
+    Authorization:    `Bearer ${BMC_INTEGRATION_KEY}`,
     "integration-id": BMC_INTEGRATION_ID,
-    "Content-Type":  "application/json",
+    "Content-Type":   "application/json",
   };
 
   const payload = {
@@ -173,15 +219,15 @@ async function callBMCLLM(userPrompt) {
       },
       { role: "user", content: userPrompt },
     ],
-    temperature:            0,
-    max_completion_tokens:  700,
+    temperature:           0,
+    max_completion_tokens: 700,
   };
 
   const response = await fetch(url, {
     method:  "POST",
     headers,
     body:    JSON.stringify(payload),
-    timeout: 10000, // fail fast so we can try Groq
+    timeout: 10000,
   });
 
   const rawText = await response.text();
@@ -205,8 +251,6 @@ async function callBMCLLM(userPrompt) {
 
 // ─────────────────────────────────────────────────────────────
 // Groq API fallback
-// Groq exposes an OpenAI-compatible endpoint — ultra-fast inference,
-// generous free tier (14 400 requests/day on the free plan).
 // ─────────────────────────────────────────────────────────────
 
 async function callGroqFallback(userPrompt) {
@@ -215,10 +259,9 @@ async function callGroqFallback(userPrompt) {
   }
 
   const payload = {
-    model:       GROQ_MODEL,
-    temperature: 0,
-    max_tokens:  1024,
-    // Ask Groq to return JSON directly — avoids markdown fences
+    model:           GROQ_MODEL,
+    temperature:     0,
+    max_tokens:      1500,
     response_format: { type: "json_object" },
     messages: [
       {
@@ -233,7 +276,7 @@ async function callGroqFallback(userPrompt) {
   const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
     method:  "POST",
     headers: {
-      Authorization: `Bearer ${GROQ_API_KEY}`,
+      Authorization:  `Bearer ${GROQ_API_KEY}`,
       "Content-Type": "application/json",
     },
     body: JSON.stringify(payload),
@@ -246,12 +289,10 @@ async function callGroqFallback(userPrompt) {
   }
 
   const result  = JSON.parse(rawText);
-  // Groq uses the same OpenAI response envelope as BMC
   const content = result?.choices?.[0]?.message?.content?.trim();
 
   if (!content) throw new Error("Empty Groq response content");
 
-  // Strip any accidental markdown fences just in case
   const clean  = content.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
   const parsed = JSON.parse(clean);
 
@@ -259,29 +300,39 @@ async function callGroqFallback(userPrompt) {
     throw new Error("Invalid Groq JSON schema");
   }
 
-  // Tag the summary so callers know which engine answered
   parsed.summary = `[Groq Fallback] ${parsed.summary || ""}`.trim();
   return parsed;
 }
 
 // ─────────────────────────────────────────────────────────────
 // Public entry point
+// UPDATED: now filters by SLA threshold per line, not just top hotspots
 // ─────────────────────────────────────────────────────────────
 
 async function getOptimizationSuggestions(
   sourceCode,
-  riskyStatements,
+  lineByLineResults,   // ← pass full lineByLineResults, not just hottestStatements
   metadata = {}
 ) {
-  if (!Array.isArray(riskyStatements) || riskyStatements.length === 0) {
+  // Filter to only lines breaching the per-line SLA threshold
+  const breachingLines = filterBreachingLines(
+    lineByLineResults,
+    metadata.slaThreshold
+  );
+
+  if (breachingLines.length === 0) {
     return {
-      summary:  "No HIGH CPU-risk statements detected.",
+      summary:  "No individual lines exceed the SLA threshold.",
       hotspots: [],
     };
   }
 
-  const limited    = dedupeRiskyStatements(riskyStatements);
-  const userPrompt = buildPrompt(sourceCode, limited, metadata);
+  console.log(
+    `Lines breaching SLA threshold (${metadata.slaThreshold}s): ` +
+    breachingLines.map(l => `line ${l.line} (${l.combined}s)`).join(", ")
+  );
+
+  const userPrompt = buildPrompt(sourceCode, breachingLines, metadata);
 
   // ── 1. Try BMC first ────────────────────────────────────────
   if (isBMCConfigured()) {
@@ -290,10 +341,7 @@ async function getOptimizationSuggestions(
       console.log("AI optimization: BMC LLM succeeded.");
       return result;
     } catch (bmcError) {
-      console.warn(
-        "BMC LLM unavailable, switching to Groq fallback:",
-        bmcError.message
-      );
+      console.warn("BMC LLM unavailable, switching to Groq fallback:", bmcError.message);
     }
   } else {
     console.warn("BMC not configured. Trying Groq fallback directly.");
@@ -309,7 +357,7 @@ async function getOptimizationSuggestions(
   }
 
   // ── 3. Static fallback ──────────────────────────────────────
-  return fallbackSuggestions(limited);
+  return fallbackSuggestions(breachingLines);
 }
 
-module.exports = { getOptimizationSuggestions };
+module.exports = { getOptimizationSuggestions, filterBreachingLines };

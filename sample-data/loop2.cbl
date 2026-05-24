@@ -18,8 +18,8 @@
            PERFORM VARYING I FROM 1 BY 1 UNTIL I > 200
               PERFORM VARYING J FROM 1 BY 1 UNTIL J > 150
                  PERFORM VARYING K FROM 1 BY 1 UNTIL K > 100
-                     PERFORM VARYING K FROM 1 BY 1 UNTIL L > 200
-                        PERFORM VARYING K FROM 1 BY 1 UNTIL M > 200
+                     PERFORM VARYING L FROM 1 BY 1 UNTIL L > 200
+                        PERFORM VARYING M FROM 1 BY 1 UNTIL M > 200
                              COMPUTE TEMP =
                                    I * J
                                  + K * L
