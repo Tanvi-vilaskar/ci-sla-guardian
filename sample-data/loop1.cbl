@@ -1,5 +1,5 @@
        IDENTIFICATION DIVISION.
-       PROGRAM-ID. LOOP2.
+       PROGRAM-ID. LOOP22.
 
        DATA DIVISION.
        WORKING-STORAGE SECTION.
@@ -9,7 +9,7 @@
        01  WS-L         PIC 9(6)   VALUE 0.
        01  WS-TOTAL     PIC 9(18)  VALUE 0.
        01  WS-TEMP      PIC 9(18)  VALUE 0.
-       01  SUM1     PIC 9(18)  VALUE 0.
+       01  SUM     PIC 9(18)  VALUE 0.
        01  WS-FLAG      PIC X      VALUE 'N'.
 
        PROCEDURE DIVISION.
