@@ -26,12 +26,13 @@ function isGroqConfigured() {
 }
 
 // ─────────────────────────────────────────────────────────────
-// Utilities
+// Shared utilities
 // ─────────────────────────────────────────────────────────────
 
 function dedupeRiskyStatements(riskyStatements) {
   const unique = [];
   const seen   = new Set();
+
   for (const stmt of riskyStatements || []) {
     const key = `${stmt.line}-${(stmt.code || "").trim()}`;
     if (!seen.has(key)) {
@@ -39,6 +40,7 @@ function dedupeRiskyStatements(riskyStatements) {
       unique.push(stmt);
     }
   }
+
   return unique.slice(0, MAX_RISKY_LINES);
 }
 
@@ -46,6 +48,7 @@ function buildContextWindow(sourceCode, lineNumber, radius = 5) {
   const lines = sourceCode.split(/\r?\n/);
   const start = Math.max(1, lineNumber - radius);
   const end   = Math.min(lines.length, lineNumber + radius);
+
   return Array.from({ length: end - start + 1 }, (_, idx) => {
     const current = start + idx;
     const marker  = current === lineNumber ? ">>>" : "   ";
@@ -54,24 +57,34 @@ function buildContextWindow(sourceCode, lineNumber, radius = 5) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// Filter — only lines whose CPU breaches SLA threshold
+// NEW: Filter statements that breach the per-line SLA threshold
+// Only these lines get AI suggestions
 // ─────────────────────────────────────────────────────────────
 
 function filterBreachingLines(lineByLineResults, slaThreshold) {
   const threshold = parseFloat(slaThreshold) || 5.0;
+
   return (lineByLineResults || [])
-    .filter(stmt => parseFloat(stmt.combined || stmt.executed || 0) > threshold)
-    .sort((a, b) => (parseFloat(b.combined) || 0) - (parseFloat(a.combined) || 0))
+    .filter(stmt => {
+      const cpu = parseFloat(stmt.combined || stmt.executed || 0);
+      return cpu > threshold;
+    })
+    .sort((a, b) => {
+      // Sort by combined CPU descending — worst offender first
+      return (parseFloat(b.combined) || 0) - (parseFloat(a.combined) || 0);
+    })
     .slice(0, MAX_RISKY_LINES);
 }
 
 // ─────────────────────────────────────────────────────────────
-// Single shared prompt — same prompt goes to both LLMs
+// UPDATED: buildPrompt — generalized for any program,
+// only for lines whose CPU breaches SLA threshold
 // ─────────────────────────────────────────────────────────────
 
 function buildPrompt(sourceCode, breachingLines, metadata = {}) {
   const threshold = parseFloat(metadata.slaThreshold) || 5.0;
 
+  // Build per-line section with full context
   const hotspotText = breachingLines.map((stmt, idx) => {
     const loopDepth = metadata.lineDepthMap
       ? (metadata.lineDepthMap[String(stmt.line)] ?? "unknown")
@@ -155,15 +168,47 @@ Return valid JSON only — no markdown fences, no extra text:
 }
 
 // ─────────────────────────────────────────────────────────────
+// Fallback suggestions (when both BMC and Groq fail)
+// ─────────────────────────────────────────────────────────────
+
+function fallbackSuggestions(breachingLines) {
+  return {
+    summary: "LLM response unavailable. Returning safe fallback guidance.",
+    hotspots: (breachingLines || []).slice(0, 3).map((stmt) => ({
+      line: stmt.line,
+      type: stmt.type || "UNKNOWN",
+      suggestions: [
+        {
+          suggestion:
+            "Review whether invariant calculations in this execution path can be moved outside repeated loop execution.",
+          reason:
+            "Repeated arithmetic inside loops often increases CPU without changing business output.",
+          safety: "High",
+        },
+        {
+          suggestion:
+            "Check for repeated file or DB access in the same path and evaluate whether access ordering or reuse can reduce repeated work.",
+          reason:
+            "Reducing repeated I/O or access preparation can lower CPU while preserving semantics.",
+          safety: "Medium",
+        },
+      ],
+    })),
+  };
+}
+
+// ─────────────────────────────────────────────────────────────
 // BMC LLM call
 // ─────────────────────────────────────────────────────────────
 
 async function callBMCLLM(userPrompt) {
-  if (!isBMCConfigured()) {
-    throw new Error("BMC not configured");
-  }
-
   const url = `${BMC_INTEGRATION_PATH.replace(/\/$/, "")}/generate`;
+
+  const headers = {
+    Authorization:    `Bearer ${BMC_INTEGRATION_KEY}`,
+    "integration-id": BMC_INTEGRATION_ID,
+    "Content-Type":   "application/json",
+  };
 
   const payload = {
     messages: [
@@ -175,41 +220,42 @@ async function callBMCLLM(userPrompt) {
       { role: "user", content: userPrompt },
     ],
     temperature:           0,
-    max_completion_tokens: 1000,
+    max_completion_tokens: 700,
   };
 
   const response = await fetch(url, {
     method:  "POST",
-    headers: {
-      Authorization:    `Bearer ${BMC_INTEGRATION_KEY}`,
-      "integration-id": BMC_INTEGRATION_ID,
-      "Content-Type":   "application/json",
-    },
+    headers,
     body:    JSON.stringify(payload),
     timeout: 10000,
   });
 
   const rawText = await response.text();
-  if (!response.ok) throw new Error(`BMC HTTP ${response.status}: ${rawText}`);
+
+  if (!response.ok) {
+    throw new Error(`BMC LLM HTTP ${response.status}: ${rawText}`);
+  }
 
   const result  = JSON.parse(rawText);
   const content = result?.choices?.[0]?.message?.content?.trim();
-  if (!content) throw new Error("Empty BMC response");
+
+  if (!content) throw new Error("Empty BMC LLM response content");
 
   const parsed = JSON.parse(content);
-  if (!parsed || !Array.isArray(parsed.hotspots)) throw new Error("Invalid BMC JSON schema");
+  if (!parsed || !Array.isArray(parsed.hotspots)) {
+    throw new Error("Invalid BMC LLM JSON schema");
+  }
 
-  parsed.source = "BMC AMI";
   return parsed;
 }
 
 // ─────────────────────────────────────────────────────────────
-// Groq LLM call
+// Groq API fallback
 // ─────────────────────────────────────────────────────────────
 
-async function callGroqLLM(userPrompt) {
+async function callGroqFallback(userPrompt) {
   if (!isGroqConfigured()) {
-    throw new Error("GROQ_API_KEY not set");
+    throw new Error("GROQ_API_KEY not set — cannot use Groq fallback");
   }
 
   const payload = {
@@ -237,195 +283,80 @@ async function callGroqLLM(userPrompt) {
   });
 
   const rawText = await response.text();
-  if (!response.ok) throw new Error(`Groq HTTP ${response.status}: ${rawText}`);
+
+  if (!response.ok) {
+    throw new Error(`Groq API HTTP ${response.status}: ${rawText}`);
+  }
 
   const result  = JSON.parse(rawText);
   const content = result?.choices?.[0]?.message?.content?.trim();
-  if (!content) throw new Error("Empty Groq response");
+
+  if (!content) throw new Error("Empty Groq response content");
 
   const clean  = content.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
   const parsed = JSON.parse(clean);
-  if (!parsed || !Array.isArray(parsed.hotspots)) throw new Error("Invalid Groq JSON schema");
 
-  parsed.source = "Groq";
+  if (!parsed || !Array.isArray(parsed.hotspots)) {
+    throw new Error("Invalid Groq JSON schema");
+  }
+
+  parsed.summary = `[Groq Fallback] ${parsed.summary || ""}`.trim();
   return parsed;
 }
 
 // ─────────────────────────────────────────────────────────────
-// Merge results from both LLMs into one combined response
-// ─────────────────────────────────────────────────────────────
-
-function computeCombinedConfidence(bmcResult, groqResult) {
-  // Check if both models agree on which lines are the problem
-  const bmcLines  = new Set((bmcResult.hotspots || []).map(h => h.line));
-  const groqLines = new Set((groqResult.hotspots || []).map(h => h.line));
-
-  const allLines    = new Set([...bmcLines, ...groqLines]);
-  const agreedLines = [...allLines].filter(l => bmcLines.has(l) && groqLines.has(l));
-  const agreement   = allLines.size > 0 ? agreedLines.length / allLines.size : 0;
-
-  if (agreement >= 0.8) return "High";
-  if (agreement >= 0.5) return "Medium";
-  return "Low";
-}
-
-function mergeHotspots(bmcHotspots = [], groqHotspots = []) {
-  // Build a map by line number
-  const byLine = new Map();
-
-  for (const h of bmcHotspots) {
-    byLine.set(h.line, {
-      line: h.line,
-      type: h.type,
-      bmc_suggestions:  h.suggestions  || [],
-      groq_suggestions: [],
-    });
-  }
-
-  for (const h of groqHotspots) {
-    if (byLine.has(h.line)) {
-      byLine.get(h.line).groq_suggestions = h.suggestions || [];
-    } else {
-      byLine.set(h.line, {
-        line: h.line,
-        type: h.type,
-        bmc_suggestions:  [],
-        groq_suggestions: h.suggestions || [],
-      });
-    }
-  }
-
-  // Sort by line number ascending
-  return [...byLine.values()].sort((a, b) => a.line - b.line);
-}
-
-function buildDualResult(bmcResult, groqResult) {
-  const combinedConfidence = computeCombinedConfidence(bmcResult, groqResult);
-  const mergedHotspots     = mergeHotspots(bmcResult.hotspots, groqResult.hotspots);
-
-  return {
-    summary:              `[BMC AMI] ${bmcResult.summary || ""}`,
-    groq_summary:         `[Groq] ${groqResult.summary || ""}`,
-    combined_confidence:  combinedConfidence,
-    engines_used:         ["BMC AMI", "Groq"],
-    hotspots:             mergedHotspots,
-    // Keep backward-compatible aiSuggestions shape for Jenkinsfile
-    aiSuggestions:        mergedHotspots.map(h => ({
-      line: h.line,
-      type: h.type,
-      bmc_suggestions:  h.bmc_suggestions,
-      groq_suggestions: h.groq_suggestions,
-    })),
-  };
-}
-
-// ─────────────────────────────────────────────────────────────
-// Static fallback (when both LLMs fail)
-// ─────────────────────────────────────────────────────────────
-
-function fallbackSuggestions(breachingLines) {
-  return {
-    summary:             "LLM response unavailable. Returning safe fallback guidance.",
-    groq_summary:        null,
-    combined_confidence: null,
-    engines_used:        ["static-fallback"],
-    hotspots: (breachingLines || []).slice(0, 3).map(stmt => ({
-      line:             stmt.line,
-      type:             stmt.type || "UNKNOWN",
-      bmc_suggestions:  [],
-      groq_suggestions: [],
-      suggestions: [
-        {
-          suggestion: "Review whether invariant calculations in this execution path can be moved outside repeated loop execution.",
-          reason:     "Repeated arithmetic inside loops often increases CPU without changing business output.",
-          safety:     "High",
-        },
-        {
-          suggestion: "Check for repeated file or DB access in the same path and evaluate whether access ordering or reuse can reduce repeated work.",
-          reason:     "Reducing repeated I/O or access preparation can lower CPU while preserving semantics.",
-          safety:     "Medium",
-        },
-      ],
-    })),
-  };
-}
-
-// ─────────────────────────────────────────────────────────────
-// Public entry point — calls BOTH LLMs in parallel
+// Public entry point
+// UPDATED: now filters by SLA threshold per line, not just top hotspots
 // ─────────────────────────────────────────────────────────────
 
 async function getOptimizationSuggestions(
   sourceCode,
-  lineByLineResults,
+  lineByLineResults,   // ← pass full lineByLineResults, not just hottestStatements
   metadata = {}
 ) {
-  // Filter to only lines breaching SLA threshold
-  const breachingLines = filterBreachingLines(lineByLineResults, metadata.slaThreshold);
+  // Filter to only lines breaching the per-line SLA threshold
+  const breachingLines = filterBreachingLines(
+    lineByLineResults,
+    metadata.slaThreshold
+  );
 
   if (breachingLines.length === 0) {
     return {
-      summary:             "No individual lines exceed the SLA threshold.",
-      groq_summary:        null,
-      combined_confidence: null,
-      engines_used:        [],
-      hotspots:            [],
+      summary:  "No individual lines exceed the SLA threshold.",
+      hotspots: [],
     };
   }
 
   console.log(
-    `Lines breaching SLA (${metadata.slaThreshold}s): ` +
+    `Lines breaching SLA threshold (${metadata.slaThreshold}s): ` +
     breachingLines.map(l => `line ${l.line} (${l.combined}s)`).join(", ")
   );
 
-  // Build one shared prompt for both LLMs
   const userPrompt = buildPrompt(sourceCode, breachingLines, metadata);
 
-  // ── Call both LLMs in parallel ──────────────────────────────
-  const bmcPromise  = isBMCConfigured()
-    ? callBMCLLM(userPrompt).catch(err => {
-        console.warn("BMC LLM failed:", err.message);
-        return null;
-      })
-    : Promise.resolve(null);
-
-  const groqPromise = isGroqConfigured()
-    ? callGroqLLM(userPrompt).catch(err => {
-        console.warn("Groq LLM failed:", err.message);
-        return null;
-      })
-    : Promise.resolve(null);
-
-  const [bmcResult, groqResult] = await Promise.all([bmcPromise, groqPromise]);
-
-  // ── Decide what to return based on what succeeded ───────────
-
-  // Both succeeded — merge and return dual result
-  if (bmcResult && groqResult) {
-    console.log("AI optimization: Both BMC and Groq succeeded — dual analysis complete.");
-    return buildDualResult(bmcResult, groqResult);
+  // ── 1. Try BMC first ────────────────────────────────────────
+  if (isBMCConfigured()) {
+    try {
+      const result = await callBMCLLM(userPrompt);
+      console.log("AI optimization: BMC LLM succeeded.");
+      return result;
+    } catch (bmcError) {
+      console.warn("BMC LLM unavailable, switching to Groq fallback:", bmcError.message);
+    }
+  } else {
+    console.warn("BMC not configured. Trying Groq fallback directly.");
   }
 
-  // Only BMC succeeded
-  if (bmcResult) {
-    console.log("AI optimization: BMC succeeded. Groq unavailable.");
-    bmcResult.groq_summary        = null;
-    bmcResult.combined_confidence = null;
-    bmcResult.engines_used        = ["BMC AMI"];
-    return bmcResult;
+  // ── 2. Try Groq fallback ────────────────────────────────────
+  try {
+    const result = await callGroqFallback(userPrompt);
+    console.log("AI optimization: Groq fallback succeeded.");
+    return result;
+  } catch (groqError) {
+    console.error("Groq fallback also failed:", groqError.message);
   }
 
-  // Only Groq succeeded
-  if (groqResult) {
-    console.log("AI optimization: Groq succeeded. BMC unavailable.");
-    groqResult.summary             = `[Groq] ${groqResult.summary || ""}`;
-    groqResult.groq_summary        = groqResult.summary;
-    groqResult.combined_confidence = null;
-    groqResult.engines_used        = ["Groq"];
-    return groqResult;
-  }
-
-  // Both failed — static fallback
-  console.error("Both BMC and Groq failed. Using static fallback.");
+  // ── 3. Static fallback ──────────────────────────────────────
   return fallbackSuggestions(breachingLines);
 }
 
