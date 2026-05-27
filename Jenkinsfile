@@ -160,6 +160,32 @@ pipeline {
     }
 
     post {
+        failure {
+            script {
+                try {
+                    emailext(
+                        to: "tanvilaskar01@gmail.com",
+                        subject: "BUILD FAILED: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+                        body: """The Jenkins build failed.
+
+Job: ${env.JOB_NAME}
+Build Number: ${env.BUILD_NUMBER}
+PR: ${env.CHANGE_ID ?: 'N/A'}
+Build URL: ${env.BUILD_URL}
+Result: ${currentBuild.currentResult}
+
+SLA Summary:
+${env.SLA_SUMMARY ?: 'No SLA summary available.'}
+""",
+                        mimeType: 'text/plain'
+                    )
+                    echo "Failure notification email sent."
+                } catch (e) {
+                    echo "Failed to send failure email: ${e.getMessage()}"
+                }
+            }
+        }
+
         always {
             script {
                 if (!env.CHANGE_ID || !env.SLA_SUMMARY) {
