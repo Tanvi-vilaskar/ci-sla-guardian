@@ -3,7 +3,7 @@
 
        DATA DIVISION.
        WORKING-STORAGE SECTION.
-       01  WS-I         PIC 9(6)   VALUE 0.
+       01  WS-I         
        01  WS-J         PIC 9(6)   VALUE 0.
        01  WS-K         PIC 9(6)   VALUE 0.
        01  WS-L         PIC 9(6)   VALUE 0.

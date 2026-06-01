@@ -9,20 +9,21 @@ const { FeatureExtractor } = require("../src/featureExtractor");
 const { predict } = require("../src/cpuPredictor");
 const { getOptimizationSuggestions } = require("../src/aiOptimizer");
 
-const SLA_THRESHOLD     = Number(process.env.SLA_THRESHOLD     || 5.0);
-const SESSION_THRESHOLD = Number(process.env.SESSION_THRESHOLD || 20.0);
+const SLA_THRESHOLD = Number(process.env.SLA_THRESHOLD || 30.0);
+const SESSION_THRESHOLD = Number(process.env.SESSION_THRESHOLD || 60.0);
 const LINE_CPU_THRESHOLD = Number(process.env.LINE_CPU_THRESHOLD || 15);
 
 function slimFeatures(features) {
   if (!features) return {};
 
   return {
-    codeMetrics:            features.codeMetrics            || {},
-    loopAnalysis:           features.loopAnalysis           || {},
-    fileIO:                 features.fileIO                 || {},
-    controlFlow:            features.controlFlow            || {},
-    sqlOperations:          features.sqlOperations          || {},
+    codeMetrics: features.codeMetrics || {},
+    loopAnalysis: features.loopAnalysis || {},
+    fileIO: features.fileIO || {},
+    controlFlow: features.controlFlow || {},
+    sqlOperations: features.sqlOperations || {},
     operationsAndFunctions: features.operationsAndFunctions || {},
+    summary: features.summary || {},
   };
 }
 
@@ -36,11 +37,11 @@ function topHottestStatements(lineByLineResults, maxCount = 3) {
   );
 
   return sorted.slice(0, maxCount).map((s) => ({
-    line:       s.line,
-    type:       s.type,
-    combined:   s.combined,
-    attributed: s.attributed || 0,
-    executed:   s.executed   || 0,
+    line: s.line,
+    type: s.type,
+    combined: Number(s.combined || 0),
+    attributed: Number(s.attributed || 0),
+    executed: Number(s.executed || 0),
   }));
 }
 
@@ -50,57 +51,56 @@ async function analyzeFile(filePath) {
     source = fs.readFileSync(filePath, "utf8");
   } catch (e) {
     return {
-      file:             filePath,
-      syntaxErrors:     [],
-      deadIssues:       [],
-      features:         {},
-      mlResult:         { error: `Failed to read file: ${e.message}` },
+      file: filePath,
+      syntaxErrors: [],
+      deadIssues: [],
+      features: {},
+      mlResult: { error: `Failed to read file: ${e.message}` },
       lineByLineResults: [],
       hottestStatements: [],
-      aiSummary:        "Could not read source file.",
-      aiSuggestions:    [],
-      breached:         false,
+      aiSummary: "Could not read source file.",
+      aiSuggestions: [],
+      breached: false,
     };
   }
 
-  const analyzer    = new CobolAnalyzer(source, filePath);
+  const analyzer = new CobolAnalyzer(source, filePath);
   const syntaxErrors = analyzer.validateSyntax?.() || [];
-  const deadIssues  = analyzer.detectDeadCode?.()  || [];
-  const features    = analyzer.extractFeatures?.()  || {};
-  const isClean     = syntaxErrors.length === 0;
+  const deadIssues = analyzer.detectDeadCode?.() || [];
+  const features = analyzer.extractFeatures?.() || {};
+  const isClean = syntaxErrors.length === 0;
 
-  let mlResult         = null;
+  let mlResult = null;
   let lineByLineResults = [];
-  let aiSummary        = "";
-  let aiSuggestions    = [];
-  let breached         = false;
+  let aiSummary = "";
+  let aiSuggestions = [];
+  let breached = false;
 
   if (isClean) {
-    const lp = features.loopAnalysis           || {};
-    const io = features.fileIO                 || {};
-    const cf = features.controlFlow            || {};
+    const lp = features.loopAnalysis || {};
+    const io = features.fileIO || {};
+    const cf = features.controlFlow || {};
     const of = features.operationsAndFunctions || {};
 
     const fileIOCount =
-      (io.open    || 0) +
-      (io.close   || 0) +
-      (io.read    || 0) +
-      (io.write   || 0) +
+      (io.open || 0) +
+      (io.close || 0) +
+      (io.read || 0) +
+      (io.write || 0) +
       (io.rewrite || 0) +
-      (io.delete  || 0) +
-      (io.start   || 0);
+      (io.delete || 0) +
+      (io.start || 0);
 
-    // ── Program-level ML prediction ──────────────────────────
     try {
       const programResp = await predict(
         {
-          maxLoopDepth:    lp.maxLoopDepth    || 0,
+          maxLoopDepth: lp.maxLoopDepth || 0,
           nestedLoopCount: lp.nestedLoopCount || 0,
-          totalPerforms:   lp.totalPerforms   || 0,
+          totalPerforms: lp.totalPerforms || 0,
           fileIOCount,
-          ifCount:         cf.ifStatements    || 0,
-          functionCalls:   cf.callStatements  ?? of.builtInFunctionCalls ?? 0,
-          arithmeticOps:   of.totalArithmetic || 0,
+          ifCount: cf.ifStatements || 0,
+          functionCalls: cf.callStatements ?? of.builtInFunctionCalls ?? 0,
+          arithmeticOps: of.totalArithmetic || 0,
         },
         "program"
       );
@@ -116,13 +116,12 @@ async function analyzeFile(filePath) {
       mlResult = { error: `Program prediction threw: ${e.message}` };
     }
 
-    const cpu            = Number(mlResult?.cpu_time     || 0);
-    const session        = Number(mlResult?.session_time || 0);
-    const cpuBreached    = cpu     > SLA_THRESHOLD;
+    const cpu = Number(mlResult?.cpu_time || 0);
+    const session = Number(mlResult?.session_time || 0);
+    const cpuBreached = cpu > SLA_THRESHOLD;
     const sessionBreached = session > SESSION_THRESHOLD;
     breached = cpuBreached || sessionBreached;
 
-    // ── Line-by-line ML prediction ───────────────────────────
     try {
       const extractor = new FeatureExtractor(
         { ...features, deadIssues },
@@ -140,10 +139,10 @@ async function analyzeFile(filePath) {
           const resp = await predict(
             {
               statement_type: row[2],
-              is_loop:        row[3],
-              loop_depth:     row[4],
-              is_arithmetic:  row[5],
-              is_io:          row[6],
+              is_loop: row[3],
+              loop_depth: row[4],
+              is_arithmetic: row[5],
+              is_io: row[6],
             },
             "statement"
           );
@@ -152,87 +151,118 @@ async function analyzeFile(filePath) {
             resp && resp.success && resp.prediction ? resp.prediction : {};
 
           lineByLineResults.push({
-            line:       row[0],
-            type:       row[2],
-            combined:   p.combined   || 0,
-            attributed: p.attributed || 0,
-            executed:   p.executed   || 0,
-            error:      resp && !resp.success ? resp.error : null,
+            line: row[0],
+            type: row[2],
+            combined: Number(p.combined || 0),
+            attributed: Number(p.attributed || 0),
+            executed: Number(p.executed || 0),
+            estimatedExecutions: Number(
+              lp.lineEstimatedExecutions?.[String(row[0])] ??
+              lp.lineEstimatedExecutions?.[row[0]] ??
+              0
+            ),
+            loopDepth: Number(
+              lp.lineDepthMap?.[String(row[0])] ??
+              lp.lineDepthMap?.[row[0]] ??
+              0
+            ),
+            insideLoop:
+              (lp.lineInsideLoop?.[String(row[0])] ??
+                lp.lineInsideLoop?.[row[0]] ??
+                0) === 1,
+            error: resp && !resp.success ? resp.error : null,
           });
         } catch (e) {
           lineByLineResults.push({
-            line:       row[0],
-            type:       row[2],
-            combined:   0,
+            line: row[0],
+            type: row[2],
+            combined: 0,
             attributed: 0,
-            executed:   0,
-            error:      `Statement prediction threw: ${e.message}`,
+            executed: 0,
+            estimatedExecutions: Number(
+              lp.lineEstimatedExecutions?.[String(row[0])] ??
+              lp.lineEstimatedExecutions?.[row[0]] ??
+              0
+            ),
+            loopDepth: Number(
+              lp.lineDepthMap?.[String(row[0])] ??
+              lp.lineDepthMap?.[row[0]] ??
+              0
+            ),
+            insideLoop:
+              (lp.lineInsideLoop?.[String(row[0])] ??
+                lp.lineInsideLoop?.[row[0]] ??
+                0) === 1,
+            error: `Statement prediction threw: ${e.message}`,
           });
         }
       }
     } catch (e) {
       lineByLineResults.push({
-        line:       0,
-        type:       "INTERNAL",
-        combined:   0,
+        line: 0,
+        type: "INTERNAL",
+        combined: 0,
         attributed: 0,
-        executed:   0,
-        error:      `Statement-level analysis failed: ${e.message}`,
+        executed: 0,
+        estimatedExecutions: 0,
+        loopDepth: 0,
+        insideLoop: false,
+        error: `Statement-level analysis failed: ${e.message}`,
       });
     }
 
     const hottestStatements = topHottestStatements(lineByLineResults, 3);
 
-    // ── AI suggestions — now uses lineByLineResults + enriched metadata ──
     try {
       const ai = await getOptimizationSuggestions(
         source,
-        // Pass full lineByLineResults — aiOptimizer will filter
-        // to only lines whose combined CPU breaches SLA_THRESHOLD
         lineByLineResults,
         {
-          // Program identity
           programName:
             (features.summary && features.summary.programId) ||
-            path.basename(filePath, ".cbl").toUpperCase(),
+            path.basename(filePath, path.extname(filePath)).toUpperCase(),
 
-          // SLA context
-          programCpuTime: mlResult?.cpu_time  ?? null,
-          slaThreshold:   SLA_THRESHOLD,
-          slaStatus:      breached ? "BREACHED" : "SAFE",
+          programCpuTime: mlResult?.cpu_time ?? null,
+          slaThreshold: SLA_THRESHOLD,
+          lineCpuThreshold: LINE_CPU_THRESHOLD,
+          slaStatus: breached ? "BREACHED" : "SAFE",
 
-          // Loop context — used per-line in buildPrompt
-          cyclomaticComplexity: cf.cyclomaticComplexity  ?? null,
-          nestedLoopCount:      lp.nestedLoopCount       ?? null,
-          maxLoopDepth:         lp.maxLoopDepth           ?? null,
-          estIterations:        lp.estIterations          ?? null,
-          totalPerforms:        lp.totalPerforms          ?? null,
+          cyclomaticComplexity: cf.cyclomaticComplexity ?? null,
+          nestedLoopCount: lp.nestedLoopCount ?? null,
+          maxLoopDepth: lp.maxLoopDepth ?? null,
+          estIterations: lp.estIterations ?? null,
+          totalPerforms: lp.totalPerforms ?? null,
 
-          // Per-line loop depth maps — used to enrich each breaching line
-          lineDepthMap:   lp.lineDepthMap   || {},
+          lineDepthMap: lp.lineDepthMap || {},
           lineInsideLoop: lp.lineInsideLoop || {},
+          lineEstimatedExecutions: lp.lineEstimatedExecutions || {},
+          loopWarnings: lp.loopWarnings || [],
         }
       );
 
       if (typeof ai === "string") {
-        aiSummary    = ai;
+        aiSummary = ai;
         aiSuggestions = [];
       } else {
         aiSummary =
           (ai && ai.summary) ||
           "LLM response unavailable. Returning safe fallback guidance.";
-        aiSuggestions = Array.isArray(ai?.hotspots) ? ai.hotspots : [];
+        aiSuggestions = Array.isArray(ai?.hotspots)
+          ? ai.hotspots
+          : Array.isArray(ai?.aiSuggestions)
+            ? ai.aiSuggestions
+            : [];
       }
     } catch (e) {
-      aiSummary    = "LLM response unavailable. Returning safe fallback guidance.";
+      aiSummary = "LLM response unavailable. Returning safe fallback guidance.";
       aiSuggestions = [];
     }
 
     return {
-      file:             filePath,
+      file: filePath,
       syntaxErrors,
       deadIssues,
-      features:         slimFeatures(features),
+      features: slimFeatures(features),
       mlResult,
       lineByLineResults,
       hottestStatements,
@@ -242,18 +272,17 @@ async function analyzeFile(filePath) {
     };
   }
 
-  // ── Syntax errors path ───────────────────────────────────────
   return {
-    file:             filePath,
+    file: filePath,
     syntaxErrors,
     deadIssues,
-    features:         slimFeatures(features),
+    features: slimFeatures(features),
     mlResult,
     lineByLineResults: [],
     hottestStatements: [],
-    aiSummary:        "Program has syntax errors; SLA analysis skipped.",
-    aiSuggestions:    [],
-    breached:         false,
+    aiSummary: "Program has syntax errors; SLA analysis skipped.",
+    aiSuggestions: [],
+    breached: false,
   };
 }
 
@@ -271,16 +300,16 @@ async function main() {
       results.push(await analyzeFile(f));
     } catch (e) {
       results.push({
-        file:             f,
-        syntaxErrors:     [],
-        deadIssues:       [],
-        features:         {},
-        mlResult:         { error: `Fatal analyze error: ${e.message}` },
+        file: f,
+        syntaxErrors: [],
+        deadIssues: [],
+        features: {},
+        mlResult: { error: `Fatal analyze error: ${e.message}` },
         lineByLineResults: [],
         hottestStatements: [],
-        aiSummary:        "LLM response unavailable. Returning safe fallback guidance.",
-        aiSuggestions:    [],
-        breached:         false,
+        aiSummary: "LLM response unavailable. Returning safe fallback guidance.",
+        aiSuggestions: [],
+        breached: false,
       });
     }
   }
@@ -299,16 +328,16 @@ if (require.main === module) {
         {
           results: [
             {
-              file:             "CI-PIPELINE",
-              syntaxErrors:     [],
-              deadIssues:       [],
-              features:         {},
-              mlResult:         { error: `Top-level failure: ${err.message}` },
+              file: "CI-PIPELINE",
+              syntaxErrors: [],
+              deadIssues: [],
+              features: {},
+              mlResult: { error: `Top-level failure: ${err.message}` },
               lineByLineResults: [],
               hottestStatements: [],
-              aiSummary:        "LLM response unavailable. Returning safe fallback guidance.",
-              aiSuggestions:    [],
-              breached:         false,
+              aiSummary: "LLM response unavailable. Returning safe fallback guidance.",
+              aiSuggestions: [],
+              breached: false,
             },
           ],
         },
