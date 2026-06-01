@@ -11,8 +11,8 @@
     {
       "id": "branch_create",
       "label": "Create & checkout feature branch",
-      "cmd": "git checkout -b demo",
-      "enabled": false,
+      "cmd": "git checkout demo",
+      "enabled": true,
       "note": "Optional: enable to create a new branch before committing"
     },
     {
@@ -25,7 +25,7 @@
     {
       "id": "commit",
       "label": "Commit with SLA-validated message",
-      "cmd": "git commit -m \"added for testing\"",
+      "cmd": "git commit -m \"added for testing 2\"",
       "enabled": true,
       "note": "Edit the commit message above"
     },

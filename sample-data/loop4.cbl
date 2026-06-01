@@ -9,8 +9,6 @@
            05  VALUE-ITEM  PIC S9(9) COMP OCCURS 50 TIMES
                             INDEXED BY IDX.
 
-       PROCEDURE DIVISION
+       PROCEDURE DIVISION.
 
-       FINISH-PARA.
-           DISPLAY "SMALLSAFE1 SUM = " SUM1
-           STOP RUN.
+           DISPLAY "cobol code".
