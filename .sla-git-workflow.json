@@ -1,0 +1,41 @@
+{
+  "_comment": "SLA Guardian Git Workflow — edit commands, set enabled:true/false, then click Validate & Push again.",
+  "steps": [
+    {
+      "id": "init",
+      "label": "Initialize git repository",
+      "cmd": "git init",
+      "enabled": false,
+      "note": "Run only once per project"
+    },
+    {
+      "id": "branch_create",
+      "label": "Create & checkout feature branch",
+      "cmd": "git checkout demo",
+      "enabled": true,
+      "note": "Optional: enable to create a new branch before committing"
+    },
+    {
+      "id": "add",
+      "label": "Stage all changes",
+      "cmd": "git add .",
+      "enabled": true,
+      "note": "Stages all modified COBOL files"
+    },
+    {
+      "id": "commit",
+      "label": "Commit with SLA-validated message",
+      "cmd": "git commit -m \"added for testing 2\"",
+      "enabled": true,
+      "note": "Edit the commit message above"
+    },
+    {
+      "id": "push",
+      "label": "Push to remote",
+      "cmd": "git push origin demo",
+      "enabled": true,
+      "note": "Pre-push hook will verify .sla-push-status before this runs"
+    }
+  ],
+  "stopOnError": true
+}
